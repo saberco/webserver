@@ -16,8 +16,9 @@
 #include<sys/uio.h>
 #include<cstring>
 #include<string.h>
+#include<boost/format.hpp>
 #include"locker.h"
-
+#include"sql_conn.h"
 
 class http_conn{
 public:
@@ -27,7 +28,6 @@ public:
     //读写缓冲大小
     static const int READ_BUFFER_SIZE = 2048;
     static const int WRITE_BUFFER_SIZE = 2048;
-
     //HTTP请求方法
     enum METHOD {GET = 0, POST, HEAD, PUT, DELETE, TRACE, OPTIONS, CONNECT};
     /*解析客户端请求时，主状态机的状态
@@ -54,11 +54,12 @@ public:
     */
     enum HTTP_CODE {NO_REQUEST, GET_REQUEST, BAD_REQUEST, NO_RESOURCE, FORBIDDEN_REQUEST, FILE_REQUEST , INTERNAL_ERROR, CLOSED_CONNECTION };
     
+    enum POST_ACT {LOGIN=0, REGISTER};
     
+    connpool* connPool;
 
 
-
-    http_conn(){}
+    http_conn(){connPool = connpool::get_instance();}
     ~http_conn(){}
     //处理客户端的请求，即解析HTTP请求报文，并响应客户端
     void process();
@@ -101,6 +102,13 @@ private:
     int m_checked_index;//当前正在解析的字符在读缓冲区的位置
     int m_start_line;   //当前解析行的在数组中的起始位置
 
+    //POST请求相关
+    char * m_first;
+    char * m_mail;
+    char * m_username;
+    char * m_password;
+
+
     char * m_url;//请求目标文件的文件名
     char * m_version; //HTTP协议版本
     char m_real_file[FILENAME_LEN];// 客户请求的目标文件的完整路径，其内容等于 doc_root + m_url, doc_root是网站根目录
@@ -120,6 +128,13 @@ private:
 
     METHOD m_method;    //请求方法
     CHECK_STATE m_check_state; //主状态机当前状态
+    POST_ACT m_post_act;//是登录还是注册
+
+    //数据库相关
+    sql::Connection* m_conn_sql;
+    sql::Statement * m_state_sql;
+    sql::ResultSet * m_result_sql;
+    sql::PreparedStatement * m_prep_state;
 
 private:
     void init();    //初始化其余的数据

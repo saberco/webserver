@@ -11,6 +11,7 @@
 #include"http_conn.h"
 #include"locker.h"
 #include"threadpool.h"
+#include"sql_conn.h"
 
 #define MAX_FD 65535 //最大文件描述符个数
 #define MAX_EVENT_NUMBER 10000 //最大的监听事件数量
@@ -50,6 +51,8 @@ int main(int argc, char* argv[]){
     addsig(SIGPIPE, SIG_IGN);
     //创建线程池
     threadpool<http_conn> * pool = NULL;
+    //创建数据库连接池
+    
     try{
         pool = new threadpool<http_conn>;
     }catch(...){

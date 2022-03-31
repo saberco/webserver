@@ -17,6 +17,7 @@ const char* error_500_form = "There was an unusual problem serving the requested
 const char* doc_root = "/home/coco/my_web/webserver/resources";
 int http_conn::m_user_count = 0;
 int http_conn::m_epollfd = -1;
+//初始化数据库连接池
 
 //设置文件描述符非阻塞
 void setnonblocking(int fd){
@@ -222,7 +223,7 @@ http_conn::HTTP_CODE http_conn::process_read(){
                 if(ret == BAD_REQUEST){
                     return BAD_REQUEST;
                 }else if(ret == GET_REQUEST){
-                    printf("开始dorequest\n");
+                    printf("开始header dorequest\n");
                     return do_request();
                 }
                 
@@ -232,6 +233,7 @@ http_conn::HTTP_CODE http_conn::process_read(){
             {
                 ret = parse_content(text);
                 if(ret == GET_REQUEST){
+                    printf("开始content dorequest\n");
                     return do_request();
                 }
                 //失败则数据不完整
@@ -358,9 +360,51 @@ http_conn::HTTP_CODE http_conn::parse_headers(char * text){
 
 //解析请求体(暂时是判断是否被完整读入)
 http_conn::HTTP_CODE http_conn::parse_content(char * text){
+    printf("start parse content\n");
     if(m_read_idx >= (m_content_length + m_checked_index)){
-        text[ m_content_length ] = '\0';
-        return GET_REQUEST;
+        //如果是get请求那么不需要解析请求体
+        if(m_method==GET){
+            return GET_REQUEST;
+        }
+        //如果是POST请求
+        if(m_method==POST){
+            text[ m_content_length ] = '\0';
+            printf("%s\n",text);
+            //判断是注册的请求体还是登录的请求体，根据第一位是邮箱还是username
+            //等于0说明是注册行为
+            //以下两段正则判断，得到用户名、密码、邮箱信息，准备给数据库建立连接使用
+            if(strncasecmp(text, "mail=", 5)==0){
+                m_post_act = REGISTER;
+                text+=5;
+                m_mail = text;
+                m_first = strpbrk(text, "&");
+                *m_first++ = '\0';
+                printf("mail:%s\n",m_mail);
+                m_first+=9;
+                m_username = m_first;
+                m_first = strpbrk(m_first, "&");
+                *m_first++ = '\0';
+                printf("username:%s\n",m_username);
+                m_first+=9;
+                m_password = m_first;
+                printf("password:%s\n",m_password);
+            }
+            //else说明是登录行为
+            else{
+                m_post_act = LOGIN;
+                text+=9;
+                m_username = text;
+                m_first = strpbrk(text, "&");
+                *m_first++ = '\0';
+                m_first+=9;
+                m_password = m_first;
+                printf("username:%s\n",m_username);
+                printf("password:%s\n",m_password);
+            }
+            
+            return GET_REQUEST;
+        }
+        
     }
     return NO_REQUEST;
 }
@@ -399,9 +443,88 @@ http_conn::LINE_STATE http_conn::parse_line(){
 //具体处理，当得到一个完整的正确的HTTP请求时，就需要对目标文件进行分析
 http_conn::HTTP_CODE http_conn::do_request(){
     // "/home/coco/my_web/webserver/resources"
+    //如果是get请求
+    printf("开始判断给什么资源\n");
     strcpy(m_real_file, doc_root);
     int len = strlen(doc_root);
-    strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    if(m_method==GET){
+        strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    }
+    //如果是POST请求
+    else if(m_method==POST){
+        //如果是登录事件
+        if(m_post_act==LOGIN){
+            //登录事件负责查询
+            //获取一个连接
+            printf("从数据库池中获取一个连接\n");
+            m_conn_sql = connPool->get_connection();
+            //执行查询，登录成功返回主界面
+            printf("获取到了\n");
+            m_state_sql = m_conn_sql->createStatement();
+            m_state_sql->execute("use test");
+            
+            //格式化查询字符串
+            boost::format fmt("select * from users where name=%s");
+            std::string tmp;
+            tmp+="'";
+            tmp+=m_username;
+            tmp+="'";
+            fmt = fmt % tmp;
+            std::string target = fmt.str();
+            //执行查询
+            m_result_sql = m_state_sql->executeQuery(target);
+            std::string username_tmp;
+            std::string pwd_tmp;
+            while(m_result_sql->next()){
+                username_tmp = m_result_sql->getString("name");
+                pwd_tmp = m_result_sql->getString("pwd");
+            }
+            printf("查询完毕\n");
+            if(username_tmp.length()==0||pwd_tmp.length()==0||(m_password!=pwd_tmp)){
+                printf("没找到\n");
+                return FORBIDDEN_REQUEST;
+            }
+            else{
+                printf("找到了\n");
+                m_url = (char*)"/index.html";
+                strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+            }
+            connPool->release_connection(m_conn_sql);
+            delete m_result_sql;
+            delete m_state_sql;
+            delete m_conn_sql;
+
+        }
+        else{
+            //如果是注册事件，往数据库插入行
+            printf("从数据库池中获取一个连接\n");
+            m_conn_sql = connPool->get_connection();
+            //执行查询，登录成功返回主界面
+            printf("获取到了\n");
+            m_state_sql = m_conn_sql->createStatement();
+            m_state_sql->execute("use test");
+            try{
+                m_conn_sql->setAutoCommit(0);//关闭自动提交
+                m_prep_state = m_conn_sql->prepareStatement("INSERT INTO users(name, pwd) values(?, ?)");
+                m_prep_state->setString(1, m_username);
+                m_prep_state->setString(2, m_password);
+                m_prep_state->executeUpdate();
+                m_conn_sql->commit();
+                m_conn_sql->setAutoCommit(1);
+                delete m_prep_state;
+            }
+            catch(...){
+                return FORBIDDEN_REQUEST;
+            }
+            m_url = (char*)"/register_success.html";
+            strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+            connPool->release_connection(m_conn_sql);
+            delete m_result_sql;
+            delete m_state_sql;
+            delete m_conn_sql;
+        }
+    }
+    
     //失败返回没有资源
     if(stat(m_real_file, &m_file_stat)<0){
         return NO_RESOURCE;
